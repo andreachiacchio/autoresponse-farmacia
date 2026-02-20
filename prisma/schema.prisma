@@ -1,13 +1,12 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
+// This is your Prisma schema file
 
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "sqlite"
-  url      = env("DATABASE_URL")
+  provider  = "sqlite"
+  url       = env("DATABASE_URL")
 }
 
 // Configurazione API Trustpilot
@@ -15,9 +14,9 @@ model TrustpilotConfig {
   id                String   @id @default(cuid())
   apiKey            String
   apiSecret         String
-  businessUnitId    String?  // ID dell'attività commerciale su Trustpilot
-  accessToken       String?  // Token OAuth per le chiamate API
-  refreshToken      String?  // Token per refresh
+  businessUnitId    String?
+  accessToken       String?
+  refreshToken      String?
   tokenExpiresAt    DateTime?
   isActive          Boolean  @default(true)
   createdAt         DateTime @default(now())
@@ -29,13 +28,13 @@ model ResponseTemplate {
   id                String   @id @default(cuid())
   name              String
   description       String?
-  minRating         Int      @default(1)   // Rating minimo (1-5)
-  maxRating         Int      @default(5)   // Rating massimo (1-5)
-  customInstruction String?  // Istruzioni aggiuntive per l'AI
+  minRating         Int      @default(1)
+  maxRating         Int      @default(5)
+  customInstruction String?
   tone              String   @default("professionale")
   isActive          Boolean  @default(true)
   isDefault         Boolean  @default(false)
-  priority          Int      @default(0)   // Priorità per matching
+  priority          Int      @default(0)
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
   responses         AutoResponseLog[]
@@ -44,20 +43,20 @@ model ResponseTemplate {
 // Recensioni lette da Trustpilot
 model Review {
   id                String   @id @default(cuid())
-  trustpilotId      String   @unique  // ID della recensione su Trustpilot
+  trustpilotId      String   @unique
   businessUnitId    String?
   authorName        String?
   authorId          String?
   title             String?
   text              String?
-  rating            Int               // 1-5 stelle
+  rating            Int
   language          String?
-  status            String   @default("active")  // active, archived, deleted
+  status            String   @default("active")
   isVerified        Boolean  @default(false)
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
-  trustpilotCreatedAt DateTime?  // Data creazione su Trustpilot
-  respondedAt       DateTime?  // Quando abbiamo risposto
+  trustpilotCreatedAt DateTime?
+  respondedAt       DateTime?
   response          AutoResponseLog?
 }
 
@@ -69,7 +68,7 @@ model AutoResponseLog {
   templateId        String?
   template          ResponseTemplate? @relation(fields: [templateId], references: [id])
   generatedResponse String
-  status            String   @default("pending")  // pending, sent, failed, manual
+  status            String   @default("pending")
   sentAt            DateTime?
   errorMessage      String?
   createdAt         DateTime @default(now())
@@ -86,11 +85,11 @@ model AppSetting {
   updatedAt         DateTime @updatedAt
 }
 
-// Cron job log per tracciare le esecuzioni
+// Cron job log
 model CronJobLog {
   id                String   @id @default(cuid())
   jobName           String
-  status            String   // running, completed, failed
+  status            String
   startedAt         DateTime @default(now())
   completedAt       DateTime?
   reviewsProcessed  Int      @default(0)

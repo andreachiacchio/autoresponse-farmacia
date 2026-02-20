@@ -29,7 +29,7 @@ import {
   AlertCircle,
   CheckCircle2,
   Clock,
-  Pharmacy,
+  Pill,
   Plus,
   Save
 } from 'lucide-react'
@@ -368,7 +368,7 @@ export default function Home() {
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-4">
               <div className="bg-white/20 p-2.5 rounded-xl backdrop-blur-sm">
-                <Pharmacy className="w-7 h-7" />
+                <Pill className="w-7 h-7" />
               </div>
               <div>
                 <h1 className="text-xl font-bold">AutoResponse</h1>
