@@ -1,4 +1,3 @@
-import { db } from '@/lib/db';
 import ZAI from 'z-ai-web-dev-sdk';
 
 // Trustpilot API configuration
@@ -9,8 +8,6 @@ interface TrustpilotConfig {
   apiKey: string;
   apiSecret: string;
   businessUnitId?: string | null;
-  accessToken?: string | null;
-  refreshToken?: string | null;
 }
 
 interface TrustpilotReview {
@@ -29,43 +26,21 @@ interface TrustpilotReview {
   createdAt: string;
 }
 
-// Get Trustpilot configuration from database
-export async function getTrustpilotConfig(): Promise<TrustpilotConfig | null> {
-  const config = await db.trustpilotConfig.findFirst({
-    where: { isActive: true }
-  });
-  
-  if (!config) return null;
-  
-  return {
-    apiKey: config.apiKey,
-    apiSecret: config.apiSecret,
-    businessUnitId: config.businessUnitId,
-    accessToken: config.accessToken,
-    refreshToken: config.refreshToken
-  };
-}
+// Get Trustpilot configuration from environment variables
+export function getTrustpilotConfig(): TrustpilotConfig | null {
+  const apiKey = process.env.TRUSTPILOT_API_KEY;
+  const apiSecret = process.env.TRUSTPILOT_API_SECRET;
+  const businessUnitId = process.env.BUSINESS_UNIT_ID;
 
-// Save Trustpilot configuration to database
-export async function saveTrustpilotConfig(config: {
-  apiKey: string;
-  apiSecret: string;
-  businessUnitId?: string;
-}): Promise<void> {
-  // Deactivate existing configs
-  await db.trustpilotConfig.updateMany({
-    where: { isActive: true },
-    data: { isActive: false }
-  });
-  
-  // Create new config
-  await db.trustpilotConfig.create({
-    data: {
-      apiKey: config.apiKey,
-      apiSecret: config.apiSecret,
-      businessUnitId: config.businessUnitId || null
-    }
-  });
+  if (!apiKey || !apiSecret) {
+    return null;
+  }
+
+  return {
+    apiKey,
+    apiSecret,
+    businessUnitId
+  };
 }
 
 // Get OAuth access token from Trustpilot
@@ -241,88 +216,5 @@ Scrivi una risposta appropriata a questa recensione.`;
   return completion.choices[0]?.message?.content || '';
 }
 
-// Save review to database
-export async function saveReview(review: TrustpilotReview): Promise<void> {
-  await db.review.upsert({
-    where: { trustpilotId: review.id },
-    create: {
-      trustpilotId: review.id,
-      businessUnitId: review.businessUnitId,
-      authorName: review.consumer?.name,
-      authorId: review.consumer?.id,
-      title: review.title,
-      text: review.text,
-      rating: review.rating,
-      language: review.language,
-      status: review.status,
-      isVerified: review.isVerified,
-      trustpilotCreatedAt: new Date(review.createdAt)
-    },
-    update: {
-      title: review.title,
-      text: review.text,
-      rating: review.rating,
-      status: review.status,
-      isVerified: review.isVerified,
-      updatedAt: new Date()
-    }
-  });
-}
-
-// Find matching template for a review
-export async function findMatchingTemplate(rating: number): Promise<{
-  id: string;
-  customInstruction: string | null;
-  tone: string;
-} | null> {
-  // Try to find a specific template for this rating
-  const template = await db.responseTemplate.findFirst({
-    where: {
-      isActive: true,
-      minRating: { lte: rating },
-      maxRating: { gte: rating }
-    },
-    orderBy: [
-      { priority: 'desc' },
-      { isDefault: 'desc' }
-    ]
-  });
-
-  return template;
-}
-
-// Log auto-response
-export async function logAutoResponse(
-  reviewId: string,
-  templateId: string | null,
-  generatedResponse: string,
-  status: 'pending' | 'sent' | 'failed' | 'manual' = 'pending',
-  errorMessage?: string
-): Promise<void> {
-  await db.autoResponseLog.create({
-    data: {
-      reviewId,
-      templateId,
-      generatedResponse,
-      status,
-      errorMessage
-    }
-  });
-}
-
-// Update review response status
-export async function updateReviewResponseStatus(
-  trustpilotId: string,
-  respondedAt: Date
-): Promise<void> {
-  const review = await db.review.findUnique({
-    where: { trustpilotId }
-  });
-  
-  if (review) {
-    await db.review.update({
-      where: { trustpilotId },
-      data: { respondedAt }
-    });
-  }
-}
+// Export types
+export type { TrustpilotConfig, TrustpilotReview };

@@ -1,21 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { 
-  saveTrustpilotConfig, 
   getTrustpilotConfig, 
   getAccessToken,
   getBusinessUnit 
 } from '@/lib/trustpilot/client';
-import { db } from '@/lib/db';
 
-// GET - Get current configuration
+// GET - Get current configuration from environment
 export async function GET() {
   try {
-    const config = await getTrustpilotConfig();
+    const config = getTrustpilotConfig();
     
     if (!config) {
       return NextResponse.json({ 
         configured: false,
-        message: 'Nessuna configurazione trovata' 
+        message: 'Nessuna configurazione trovata. Configura le variabili d\'ambiente TRUSTPILOT_API_KEY e TRUSTPILOT_API_SECRET.' 
       });
     }
 
@@ -40,7 +38,10 @@ export async function GET() {
       apiKey: config.apiKey.substring(0, 8) + '...',  // Masked
       businessUnitId: config.businessUnitId,
       connectionStatus,
-      businessInfo
+      businessInfo: businessInfo ? {
+        name: businessInfo.name,
+        numberOfReviews: businessInfo.numberOfReviews
+      } : null
     });
   } catch (error) {
     console.error('Error getting config:', error);
@@ -51,7 +52,7 @@ export async function GET() {
   }
 }
 
-// POST - Save new configuration
+// POST - Test configuration (for manual testing in dashboard)
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
@@ -64,72 +65,34 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Save the configuration directly (test later)
-    await saveTrustpilotConfig({ apiKey, apiSecret, businessUnitId });
+    // Test the configuration
+    const testConfig = { apiKey, apiSecret, businessUnitId };
+    
+    try {
+      const accessToken = await getAccessToken(testConfig);
+      let businessInfo = null;
+      
+      if (businessUnitId) {
+        businessInfo = await getBusinessUnit(testConfig, accessToken);
+      }
 
-    return NextResponse.json({ 
-      success: true,
-      message: 'Configurazione salvata con successo' 
-    });
-  } catch (error) {
-    console.error('Error saving config:', error);
-    return NextResponse.json(
-      { error: 'Errore durante il salvataggio della configurazione' },
-      { status: 500 }
-    );
-  }
-}
-
-// PUT - Update configuration
-export async function PUT(request: NextRequest) {
-  try {
-    const body = await request.json();
-    const { id, isActive, businessUnitId } = body;
-
-    if (businessUnitId !== undefined) {
-      await db.trustpilotConfig.update({
-        where: { id },
-        data: { businessUnitId }
+      return NextResponse.json({ 
+        success: true,
+        message: 'Configurazione valida! Per renderla permanente, aggiorna le variabili d\'ambiente su Vercel.',
+        businessInfo: businessInfo ? {
+          name: businessInfo.name,
+          numberOfReviews: businessInfo.numberOfReviews
+        } : null
       });
-    } else {
-      await db.trustpilotConfig.update({
-        where: { id },
-        data: { isActive }
-      });
+    } catch (error: any) {
+      return NextResponse.json({ 
+        error: `Test connessione fallito: ${error.message}` 
+      }, { status: 400 });
     }
-
-    return NextResponse.json({ success: true });
   } catch (error) {
-    console.error('Error updating config:', error);
+    console.error('Error testing config:', error);
     return NextResponse.json(
-      { error: 'Errore durante l\'aggiornamento della configurazione' },
-      { status: 500 }
-    );
-  }
-}
-
-// DELETE - Delete configuration
-export async function DELETE(request: NextRequest) {
-  try {
-    const { searchParams } = new URL(request.url);
-    const id = searchParams.get('id');
-
-    if (!id) {
-      return NextResponse.json(
-        { error: 'ID richiesto' },
-        { status: 400 }
-      );
-    }
-
-    await db.trustpilotConfig.delete({
-      where: { id }
-    });
-
-    return NextResponse.json({ success: true });
-  } catch (error) {
-    console.error('Error deleting config:', error);
-    return NextResponse.json(
-      { error: 'Errore durante l\'eliminazione della configurazione' },
+      { error: 'Errore durante il test della configurazione' },
       { status: 500 }
     );
   }

@@ -1,36 +1,53 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@/lib/db';
 import { 
   getTrustpilotConfig, 
   getAccessToken, 
-  replyToReview 
+  replyToReview,
+  fetchReviews,
+  generateAIResponse,
+  TrustpilotReview
 } from '@/lib/trustpilot/client';
 
-// GET - Get all responses (with filters)
+// In-memory storage for pending responses (resets on each deployment)
+const pendingResponses: Map<string, {
+  id: string;
+  reviewId: string;
+  review: TrustpilotReview;
+  generatedResponse: string;
+  status: 'pending' | 'sent' | 'rejected';
+  createdAt: Date;
+}> = new Map();
+
+// GET - Get pending responses
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const status = searchParams.get('status');
-    const limit = parseInt(searchParams.get('limit') || '50');
 
-    const whereClause: Record<string, unknown> = {};
+    let responses = Array.from(pendingResponses.values());
+    
     if (status) {
-      whereClause.status = status;
+      responses = responses.filter(r => r.status === status);
     }
-
-    const responses = await db.autoResponseLog.findMany({
-      where: whereClause,
-      include: {
-        review: true,
-        template: true
-      },
-      orderBy: { createdAt: 'desc' },
-      take: limit
-    });
 
     return NextResponse.json({
       success: true,
-      responses
+      responses: responses.map(r => ({
+        id: r.id,
+        reviewId: r.reviewId,
+        generatedResponse: r.generatedResponse,
+        status: r.status,
+        createdAt: r.createdAt,
+        review: {
+          id: r.review.id,
+          authorName: r.review.consumer?.name || 'Cliente Anonimo',
+          text: r.review.text,
+          rating: r.review.rating
+        },
+        template: {
+          name: 'Default'
+        }
+      }))
     });
   } catch (error) {
     console.error('Error fetching responses:', error);
@@ -41,143 +58,82 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// POST - Approve and send a pending response
+// POST - Generate and/or send a response
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { responseId, editedResponse } = body;
+    const { reviewId, editedResponse, review, generateNew } = body;
 
-    if (!responseId) {
-      return NextResponse.json(
-        { error: 'ID risposta richiesto' },
-        { status: 400 }
-      );
-    }
+    // If reviewId is provided with editedResponse, send it
+    if (reviewId && editedResponse) {
+      const config = getTrustpilotConfig();
+      if (!config || !config.businessUnitId) {
+        return NextResponse.json(
+          { error: 'Configurazione Trustpilot non trovata' },
+          { status: 400 }
+        );
+      }
 
-    const responseLog = await db.autoResponseLog.findUnique({
-      where: { id: responseId },
-      include: { review: true }
-    });
+      const accessToken = await getAccessToken(config);
+      
+      const sent = await replyToReview(config, accessToken, reviewId, editedResponse);
 
-    if (!responseLog) {
-      return NextResponse.json(
-        { error: 'Risposta non trovata' },
-        { status: 404 }
-      );
-    }
-
-    if (responseLog.status === 'sent') {
-      return NextResponse.json(
-        { error: 'Questa risposta è già stata inviata' },
-        { status: 400 }
-      );
-    }
-
-    const config = await getTrustpilotConfig();
-    if (!config) {
-      return NextResponse.json(
-        { error: 'Configurazione Trustpilot non trovata' },
-        { status: 400 }
-      );
-    }
-
-    const accessToken = await getAccessToken(config);
-    const messageToSend = editedResponse || responseLog.generatedResponse;
-
-    // Send to Trustpilot
-    const sent = await replyToReview(
-      config, 
-      accessToken, 
-      responseLog.review.trustpilotId, 
-      messageToSend
-    );
-
-    if (sent) {
-      // Update response log
-      await db.autoResponseLog.update({
-        where: { id: responseId },
-        data: {
-          generatedResponse: messageToSend,
-          status: 'sent',
-          sentAt: new Date()
+      if (sent) {
+        // Update status in memory
+        const pending = pendingResponses.get(reviewId);
+        if (pending) {
+          pending.status = 'sent';
         }
-      });
 
-      // Update review
-      await db.review.update({
-        where: { id: responseLog.reviewId },
-        data: { respondedAt: new Date() }
+        return NextResponse.json({
+          success: true,
+          message: 'Risposta inviata con successo'
+        });
+      } else {
+        return NextResponse.json(
+          { error: 'Impossibile inviare la risposta a Trustpilot' },
+          { status: 500 }
+        );
+      }
+    }
+
+    // If review is provided, generate a new response
+    if (review && generateNew) {
+      const response = await generateAIResponse(review as TrustpilotReview);
+      
+      const pendingId = `resp-${Date.now()}`;
+      pendingResponses.set(pendingId, {
+        id: pendingId,
+        reviewId: review.id,
+        review: review,
+        generatedResponse: response,
+        status: 'pending',
+        createdAt: new Date()
       });
 
       return NextResponse.json({
         success: true,
-        message: 'Risposta inviata con successo'
+        response: {
+          id: pendingId,
+          generatedResponse: response
+        }
       });
-    } else {
-      return NextResponse.json(
-        { error: 'Impossibile inviare la risposta a Trustpilot' },
-        { status: 500 }
-      );
     }
-  } catch (error) {
-    console.error('Error approving response:', error);
+
     return NextResponse.json(
-      { error: 'Errore durante l\'invio della risposta' },
+      { error: 'Parametri non validi' },
+      { status: 400 }
+    );
+  } catch (error) {
+    console.error('Error in response POST:', error);
+    return NextResponse.json(
+      { error: 'Errore durante l\'elaborazione della risposta' },
       { status: 500 }
     );
   }
 }
 
-// PUT - Edit a pending response
-export async function PUT(request: NextRequest) {
-  try {
-    const body = await request.json();
-    const { responseId, generatedResponse } = body;
-
-    if (!responseId || !generatedResponse) {
-      return NextResponse.json(
-        { error: 'ID risposta e testo della risposta sono richiesti' },
-        { status: 400 }
-      );
-    }
-
-    const responseLog = await db.autoResponseLog.findUnique({
-      where: { id: responseId }
-    });
-
-    if (!responseLog) {
-      return NextResponse.json(
-        { error: 'Risposta non trovata' },
-        { status: 404 }
-      );
-    }
-
-    if (responseLog.status === 'sent') {
-      return NextResponse.json(
-        { error: 'Non è possibile modificare una risposta già inviata' },
-        { status: 400 }
-      );
-    }
-
-    await db.autoResponseLog.update({
-      where: { id: responseId },
-      data: { generatedResponse }
-    });
-
-    return NextResponse.json({
-      success: true,
-      message: 'Risposta aggiornata'
-    });
-  } catch (error) {
-    console.error('Error updating response:', error);
-    return NextResponse.json(
-      { error: 'Errore durante l\'aggiornamento della risposta' },
-      { status: 500 }
-    );
-  }
-}
-
-// DELETE - Reject/delete a pending response
+// DELETE - Reject a pending response
 export async function DELETE(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
@@ -190,32 +146,14 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    const responseLog = await db.autoResponseLog.findUnique({
-      where: { id }
-    });
-
-    if (!responseLog) {
-      return NextResponse.json(
-        { error: 'Risposta non trovata' },
-        { status: 404 }
-      );
+    const pending = pendingResponses.get(id);
+    if (pending) {
+      pending.status = 'rejected';
     }
-
-    if (responseLog.status === 'sent') {
-      return NextResponse.json(
-        { error: 'Non è possibile eliminare una risposta già inviata' },
-        { status: 400 }
-      );
-    }
-
-    await db.autoResponseLog.update({
-      where: { id },
-      data: { status: 'manual' }
-    });
 
     return NextResponse.json({
       success: true,
-      message: 'Risposta contrassegnata per gestione manuale'
+      message: 'Risposta rifiutata'
     });
   } catch (error) {
     console.error('Error deleting response:', error);

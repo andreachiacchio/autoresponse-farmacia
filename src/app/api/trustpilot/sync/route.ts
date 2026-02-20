@@ -3,38 +3,60 @@ import {
   getTrustpilotConfig, 
   getAccessToken, 
   fetchReviews,
-  saveReview,
-  findMatchingTemplate,
   generateAIResponse,
   replyToReview,
-  logAutoResponse,
-  updateReviewResponseStatus
+  TrustpilotReview
 } from '@/lib/trustpilot/client';
-import { db } from '@/lib/db';
+
+// In-memory cache for processed reviews (resets on each deployment)
+const processedReviews = new Set<string>();
+
+// Default templates based on rating
+function getDefaultTemplate(rating: number): { tone: string; instruction: string } {
+  if (rating >= 4) {
+    return {
+      tone: 'professionale',
+      instruction: 'Il cliente ha lasciato una recensione positiva. Esprimi gratitudine sincera e invita a tornare.'
+    };
+  } else if (rating <= 2) {
+    return {
+      tone: 'empatico',
+      instruction: 'Il cliente ha avuto un\'esperienza negativa. Mostra empatia, scusati se appropriato, e proponi una soluzione o un modo per rimediare. Offri un contatto diretto per risolvere il problema.'
+    };
+  } else {
+    return {
+      tone: 'professionale',
+      instruction: 'Il cliente ha lasciato una recensione mista. Ringrazia per gli aspetti positivi e affronta costruttivamente quelli negativi.'
+    };
+  }
+}
 
 // POST - Sync reviews and optionally auto-respond
 export async function POST(request: NextRequest) {
-  const cronLog = await db.cronJobLog.create({
-    data: {
-      jobName: 'trustpilot_sync',
-      status: 'running'
-    }
-  });
-
   try {
     const body = await request.json();
-    const { autoReply = false, dryRun = false } = body;
+    const { autoReply = false, dryRun = true, limit = 20 } = body;
 
-    const config = await getTrustpilotConfig();
+    const config = getTrustpilotConfig();
     
     if (!config) {
-      throw new Error('Configurazione Trustpilot non trovata');
+      return NextResponse.json(
+        { error: 'Configurazione Trustpilot non trovata. Configura le variabili d\'ambiente.' },
+        { status: 400 }
+      );
+    }
+
+    if (!config.businessUnitId) {
+      return NextResponse.json(
+        { error: 'Business Unit ID non configurato. Aggiungi BUSINESS_UNIT_ID alle variabili d\'ambiente.' },
+        { status: 400 }
+      );
     }
 
     const accessToken = await getAccessToken(config);
     
     // Fetch recent reviews
-    const reviews = await fetchReviews(config, accessToken, { limit: 50 });
+    const reviews = await fetchReviews(config, accessToken, { limit });
 
     let reviewsProcessed = 0;
     let responsesSent = 0;
@@ -49,60 +71,36 @@ export async function POST(request: NextRequest) {
 
     for (const review of reviews) {
       try {
-        // Save review to database
-        await saveReview(review);
         reviewsProcessed++;
 
-        // Check if already responded
-        const existingResponse = await db.autoResponseLog.findFirst({
-          where: { 
-            review: { trustpilotId: review.id },
-            status: 'sent'
-          }
-        });
-
-        if (existingResponse) {
+        // Check if already processed in this session
+        if (processedReviews.has(review.id)) {
           results.push({
             reviewId: review.id,
             authorName: review.consumer?.name,
             rating: review.rating,
             responded: false,
-            response: 'Già risposto in precedenza'
+            response: 'Già processato in questa sessione'
           });
           continue;
         }
 
-        // Find matching template
-        const template = await findMatchingTemplate(review.rating);
+        // Get default template based on rating
+        const template = getDefaultTemplate(review.rating);
 
         // Generate AI response
         const generatedResponse = await generateAIResponse(
-          review,
-          template?.customInstruction,
-          template?.tone || 'professionale'
+          review as TrustpilotReview,
+          template.instruction,
+          template.tone
         );
 
-        // Get the review from DB for the log
-        const savedReview = await db.review.findUnique({
-          where: { trustpilotId: review.id }
-        });
-
-        if (autoReply && !dryRun && savedReview) {
+        if (autoReply && !dryRun) {
           // Send response to Trustpilot
           const sent = await replyToReview(config, accessToken, review.id, generatedResponse);
           
           if (sent) {
-            // Log the response
-            await logAutoResponse(
-              savedReview.id,
-              template?.id || null,
-              generatedResponse,
-              'sent'
-            );
-            
-            // Update review status
-            await updateReviewResponseStatus(review.id, new Date());
-            
+            processedReviews.add(review.id);
             responsesSent++;
             results.push({
               reviewId: review.id,
@@ -112,33 +110,17 @@ export async function POST(request: NextRequest) {
               response: generatedResponse
             });
           } else {
-            // Log failed attempt
-            await logAutoResponse(
-              savedReview.id,
-              template?.id || null,
-              generatedResponse,
-              'failed',
-              'Impossibile inviare la risposta a Trustpilot'
-            );
-            
             results.push({
               reviewId: review.id,
               authorName: review.consumer?.name,
               rating: review.rating,
               responded: false,
               response: generatedResponse,
-              error: 'Impossibile inviare la risposta'
+              error: 'Impossibile inviare la risposta a Trustpilot'
             });
           }
-        } else if (savedReview) {
-          // Dry run or auto-reply disabled - just save the response as pending
-          await logAutoResponse(
-            savedReview.id,
-            template?.id || null,
-            generatedResponse,
-            'pending'
-          );
-          
+        } else {
+          // Dry run - just return the generated response
           results.push({
             reviewId: review.id,
             authorName: review.consumer?.name,
@@ -159,17 +141,6 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Update cron log
-    await db.cronJobLog.update({
-      where: { id: cronLog.id },
-      data: {
-        status: 'completed',
-        completedAt: new Date(),
-        reviewsProcessed,
-        responsesSent
-      }
-    });
-
     return NextResponse.json({
       success: true,
       reviewsProcessed,
@@ -180,17 +151,6 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     console.error('Error in sync:', error);
-    
-    // Update cron log with error
-    await db.cronJobLog.update({
-      where: { id: cronLog.id },
-      data: {
-        status: 'failed',
-        completedAt: new Date(),
-        errorMessage: error instanceof Error ? error.message : 'Errore sconosciuto'
-      }
-    });
-
     return NextResponse.json(
       { error: error instanceof Error ? error.message : 'Errore durante la sincronizzazione' },
       { status: 500 }

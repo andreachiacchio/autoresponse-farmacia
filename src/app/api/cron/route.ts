@@ -3,39 +3,53 @@ import {
   getTrustpilotConfig, 
   getAccessToken, 
   fetchReviews,
-  saveReview,
-  findMatchingTemplate,
   generateAIResponse,
   replyToReview,
-  logAutoResponse,
-  updateReviewResponseStatus
+  TrustpilotReview
 } from '@/lib/trustpilot/client';
-import { db } from '@/lib/db';
+
+// In-memory storage for logs and settings (resets on each deployment)
+let cronLogs: Array<{
+  id: string;
+  jobName: string;
+  status: string;
+  startedAt: Date;
+  completedAt?: Date;
+  reviewsProcessed: number;
+  responsesSent: number;
+  errorMessage?: string;
+}> = [];
+
+let appSettings: Record<string, string> = {
+  auto_reply_enabled: 'false'
+};
 
 // GET - Get cron job logs
 export async function GET() {
-  try {
-    const logs = await db.cronJobLog.findMany({
-      orderBy: { startedAt: 'desc' },
-      take: 20
-    });
+  return NextResponse.json({
+    success: true,
+    logs: cronLogs.slice(-20),
+    settings: appSettings
+  });
+}
 
-    const settings = await db.appSetting.findMany();
-
-    return NextResponse.json({
-      success: true,
-      logs,
-      settings: settings.reduce((acc, s) => {
-        acc[s.key] = s.value;
-        return acc;
-      }, {} as Record<string, string>)
-    });
-  } catch (error) {
-    console.error('Error fetching cron logs:', error);
-    return NextResponse.json(
-      { error: 'Errore durante il recupero dei log' },
-      { status: 500 }
-    );
+// Default templates based on rating
+function getDefaultTemplate(rating: number): { tone: string; instruction: string } {
+  if (rating >= 4) {
+    return {
+      tone: 'professionale',
+      instruction: 'Il cliente ha lasciato una recensione positiva. Esprimi gratitudine sincera e invita a tornare.'
+    };
+  } else if (rating <= 2) {
+    return {
+      tone: 'empatico',
+      instruction: 'Il cliente ha avuto un\'esperienza negativa. Mostra empatia, scusati se appropriato, e proponi una soluzione o un modo per rimediare. Offri un contatto diretto per risolvere il problema.'
+    };
+  } else {
+    return {
+      tone: 'professionale',
+      instruction: 'Il cliente ha lasciato una recensione mista. Ringrazia per gli aspetti positivi e affronta costruttivamente quelli negativi.'
+    };
   }
 }
 
@@ -52,34 +66,34 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const cronLog = await db.cronJobLog.create({
-    data: {
-      jobName: 'auto_sync',
-      status: 'running'
-    }
-  });
+  const logId = `log-${Date.now()}`;
+  const newLog = {
+    id: logId,
+    jobName: 'auto_sync',
+    status: 'running',
+    startedAt: new Date(),
+    reviewsProcessed: 0,
+    responsesSent: 0
+  };
+  cronLogs.push(newLog);
 
   try {
-    // Get auto-reply setting
-    const autoReplySetting = await db.appSetting.findUnique({
-      where: { key: 'auto_reply_enabled' }
-    });
-    const autoReply = autoReplySetting?.value === 'true';
+    const autoReply = appSettings.auto_reply_enabled === 'true';
 
-    const config = await getTrustpilotConfig();
+    const config = getTrustpilotConfig();
     
     if (!config) {
       throw new Error('Configurazione Trustpilot non trovata');
     }
 
+    if (!config.businessUnitId) {
+      throw new Error('Business Unit ID non configurato');
+    }
+
     const accessToken = await getAccessToken(config);
     
-    // Fetch recent reviews (last 7 days by default)
-    const since = new Date();
-    since.setDate(since.getDate() - 7);
-    
     const reviews = await fetchReviews(config, accessToken, { 
-      limit: 100 
+      limit: 50 
     });
 
     let reviewsProcessed = 0;
@@ -87,83 +101,42 @@ export async function POST(request: NextRequest) {
 
     for (const review of reviews) {
       try {
-        // Save review to database
-        await saveReview(review);
         reviewsProcessed++;
 
-        // Check if already responded
-        const existingResponse = await db.autoResponseLog.findFirst({
-          where: { 
-            review: { trustpilotId: review.id },
-            status: 'sent'
-          }
-        });
-
-        if (existingResponse) continue;
-
-        // Find matching template
-        const template = await findMatchingTemplate(review.rating);
+        // Get default template based on rating
+        const template = getDefaultTemplate(review.rating);
 
         // Generate AI response
         const generatedResponse = await generateAIResponse(
-          review,
-          template?.customInstruction,
-          template?.tone || 'professionale'
+          review as TrustpilotReview,
+          template.instruction,
+          template.tone
         );
-
-        // Get the review from DB
-        const savedReview = await db.review.findUnique({
-          where: { trustpilotId: review.id }
-        });
-
-        if (!savedReview) continue;
 
         if (autoReply) {
           // Send response to Trustpilot
           const sent = await replyToReview(config, accessToken, review.id, generatedResponse);
           
           if (sent) {
-            await logAutoResponse(
-              savedReview.id,
-              template?.id || null,
-              generatedResponse,
-              'sent'
-            );
-            await updateReviewResponseStatus(review.id, new Date());
             responsesSent++;
-          } else {
-            await logAutoResponse(
-              savedReview.id,
-              template?.id || null,
-              generatedResponse,
-              'failed',
-              'Impossibile inviare la risposta a Trustpilot'
-            );
           }
-        } else {
-          // Save as pending for manual review
-          await logAutoResponse(
-            savedReview.id,
-            template?.id || null,
-            generatedResponse,
-            'pending'
-          );
         }
       } catch (error) {
         console.error(`Error processing review ${review.id}:`, error);
       }
     }
 
-    // Update cron log
-    await db.cronJobLog.update({
-      where: { id: cronLog.id },
-      data: {
+    // Update log
+    const logIndex = cronLogs.findIndex(l => l.id === logId);
+    if (logIndex !== -1) {
+      cronLogs[logIndex] = {
+        ...cronLogs[logIndex],
         status: 'completed',
         completedAt: new Date(),
         reviewsProcessed,
         responsesSent
-      }
-    });
+      };
+    }
 
     return NextResponse.json({
       success: true,
@@ -174,14 +147,16 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     console.error('Error in cron job:', error);
     
-    await db.cronJobLog.update({
-      where: { id: cronLog.id },
-      data: {
+    // Update log with error
+    const logIndex = cronLogs.findIndex(l => l.id === logId);
+    if (logIndex !== -1) {
+      cronLogs[logIndex] = {
+        ...cronLogs[logIndex],
         status: 'failed',
         completedAt: new Date(),
         errorMessage: error instanceof Error ? error.message : 'Errore sconosciuto'
-      }
-    });
+      };
+    }
 
     return NextResponse.json(
       { error: error instanceof Error ? error.message : 'Errore durante la sincronizzazione' },
@@ -203,13 +178,12 @@ export async function PUT(request: NextRequest) {
       );
     }
 
-    await db.appSetting.upsert({
-      where: { key },
-      update: { value },
-      create: { key, value }
-    });
+    appSettings[key] = value;
 
-    return NextResponse.json({ success: true });
+    return NextResponse.json({ 
+      success: true,
+      note: 'Impostazione salvata in memoria. Per renderla permanente, configura le variabili d\'ambiente.'
+    });
   } catch (error) {
     console.error('Error updating setting:', error);
     return NextResponse.json(

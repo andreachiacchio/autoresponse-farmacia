@@ -1,24 +1,59 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@/lib/db';
+
+// Default templates (hardcoded for serverless)
+const defaultTemplates = [
+  {
+    id: 'template-positive',
+    name: 'Recensioni Positive',
+    description: 'Template per recensioni con 4-5 stelle',
+    minRating: 4,
+    maxRating: 5,
+    customInstruction: 'Il cliente ha lasciato una recensione positiva. Esprimi gratitudine sincera e invita a tornare.',
+    tone: 'professionale',
+    isDefault: false,
+    isActive: true,
+    priority: 1
+  },
+  {
+    id: 'template-negative',
+    name: 'Recensioni Negative',
+    description: 'Template per recensioni con 1-2 stelle',
+    minRating: 1,
+    maxRating: 2,
+    customInstruction: 'Il cliente ha avuto un\'esperienza negativa. Mostra empatia, scusati se appropriato, e proponi una soluzione o un modo per rimediare. Offri un contatto diretto per risolvere il problema.',
+    tone: 'empatico',
+    isDefault: false,
+    isActive: true,
+    priority: 2
+  },
+  {
+    id: 'template-default',
+    name: 'Default',
+    description: 'Template predefinito per tutte le recensioni',
+    minRating: 1,
+    maxRating: 5,
+    customInstruction: null,
+    tone: 'professionale',
+    isDefault: true,
+    isActive: true,
+    priority: 0
+  }
+];
+
+// In-memory templates (can be modified during session)
+let customTemplates: any[] = [];
 
 // GET - Get all templates
 export async function GET() {
   try {
-    const templates = await db.responseTemplate.findMany({
-      include: {
-        _count: {
-          select: { responses: true }
-        }
-      },
-      orderBy: [
-        { priority: 'desc' },
-        { createdAt: 'desc' }
-      ]
-    });
-
+    const allTemplates = [...defaultTemplates, ...customTemplates];
+    
     return NextResponse.json({
       success: true,
-      templates
+      templates: allTemplates.map(t => ({
+        ...t,
+        _count: { responses: 0 }
+      }))
     });
   } catch (error) {
     console.error('Error fetching templates:', error);
@@ -29,7 +64,7 @@ export async function GET() {
   }
 }
 
-// POST - Create new template
+// POST - Create new template (stored in memory for this session)
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
@@ -40,8 +75,7 @@ export async function POST(request: NextRequest) {
       maxRating, 
       customInstruction, 
       tone,
-      isDefault,
-      priority 
+      isDefault
     } = body;
 
     if (!name) {
@@ -51,30 +85,25 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // If this is set as default, remove default from others
-    if (isDefault) {
-      await db.responseTemplate.updateMany({
-        where: { isDefault: true },
-        data: { isDefault: false }
-      });
-    }
+    const template = {
+      id: `template-${Date.now()}`,
+      name,
+      description: description || '',
+      minRating: minRating || 1,
+      maxRating: maxRating || 5,
+      customInstruction: customInstruction || null,
+      tone: tone || 'professionale',
+      isDefault: isDefault || false,
+      isActive: true,
+      priority: customTemplates.length + 1
+    };
 
-    const template = await db.responseTemplate.create({
-      data: {
-        name,
-        description,
-        minRating: minRating || 1,
-        maxRating: maxRating || 5,
-        customInstruction,
-        tone: tone || 'professionale',
-        isDefault: isDefault || false,
-        priority: priority || 0
-      }
-    });
+    customTemplates.push(template);
 
     return NextResponse.json({
       success: true,
-      template
+      template,
+      note: 'Template salvato in memoria. Per renderlo permanente, modifica il codice sorgente.'
     });
   } catch (error) {
     console.error('Error creating template:', error);
@@ -85,49 +114,7 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// PUT - Update template
-export async function PUT(request: NextRequest) {
-  try {
-    const body = await request.json();
-    const { id, ...data } = body;
-
-    if (!id) {
-      return NextResponse.json(
-        { error: 'ID template richiesto' },
-        { status: 400 }
-      );
-    }
-
-    // If this is set as default, remove default from others
-    if (data.isDefault) {
-      await db.responseTemplate.updateMany({
-        where: { 
-          isDefault: true,
-          id: { not: id }
-        },
-        data: { isDefault: false }
-      });
-    }
-
-    const template = await db.responseTemplate.update({
-      where: { id },
-      data
-    });
-
-    return NextResponse.json({
-      success: true,
-      template
-    });
-  } catch (error) {
-    console.error('Error updating template:', error);
-    return NextResponse.json(
-      { error: 'Errore durante l\'aggiornamento del template' },
-      { status: 500 }
-    );
-  }
-}
-
-// DELETE - Delete template
+// DELETE - Delete custom template
 export async function DELETE(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
@@ -140,11 +127,13 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    await db.responseTemplate.delete({
-      where: { id }
-    });
+    // Can only delete custom templates
+    customTemplates = customTemplates.filter(t => t.id !== id);
 
-    return NextResponse.json({ success: true });
+    return NextResponse.json({ 
+      success: true,
+      note: 'Solo i template personalizzati possono essere eliminati.'
+    });
   } catch (error) {
     console.error('Error deleting template:', error);
     return NextResponse.json(
