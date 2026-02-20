@@ -9,22 +9,23 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
-import { Switch } from '@/components/ui/switch'
 import { 
   Settings, 
   FileText, 
-  History, 
   RefreshCw,
   Send,
   Loader2,
   Star,
   AlertCircle,
   CheckCircle2,
-  Clock,
   Pill,
   ExternalLink,
   Copy,
-  Check
+  Check,
+  AlertTriangle,
+  ThumbsUp,
+  ThumbsDown,
+  Filter
 } from 'lucide-react'
 
 // Types
@@ -39,15 +40,16 @@ interface TrustpilotConfig {
   }
 }
 
-interface Review {
-  id: string
-  trustpilotId: string
+interface SyncResult {
+  reviewId: string
   authorName?: string
+  rating: number
   title?: string
   text?: string
-  rating: number
-  createdAt: string
-  generatedResponse?: string
+  responded: boolean
+  response?: string
+  error?: string
+  skipped?: boolean
 }
 
 interface ResponseTemplate {
@@ -56,30 +58,19 @@ interface ResponseTemplate {
   description?: string
   minRating: number
   maxRating: number
-  customInstruction?: string
   tone: string
   isDefault: boolean
-  isActive: boolean
-}
-
-interface SyncResult {
-  reviewId: string
-  authorName?: string
-  rating: number
-  responded: boolean
-  response?: string
-  error?: string
 }
 
 export default function Home() {
   // State
-  const [activeTab, setActiveTab] = useState('config')
+  const [activeTab, setActiveTab] = useState('negative')
   const [config, setConfig] = useState<TrustpilotConfig | null>(null)
-  const [reviews, setReviews] = useState<Review[]>([])
   const [templates, setTemplates] = useState<ResponseTemplate[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [isSyncing, setIsSyncing] = useState(false)
   const [syncResults, setSyncResults] = useState<SyncResult[]>([])
+  const [selectedStars, setSelectedStars] = useState<string>('1')
 
   // Config form
   const [testApiKey, setTestApiKey] = useState('')
@@ -140,24 +131,34 @@ export default function Home() {
     }
   }
 
+  // Sync reviews with star filter
   const syncReviews = async (withResponses: boolean = false) => {
     setIsSyncing(true)
     setSyncResults([])
     try {
+      const body: Record<string, any> = { 
+        autoReply: withResponses, 
+        dryRun: !withResponses,
+        limit: 10
+      }
+      
+      // Add star filter
+      if (selectedStars !== 'all') {
+        body.stars = parseInt(selectedStars)
+      }
+
       const res = await fetch('/api/trustpilot/sync', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          autoReply: withResponses, 
-          dryRun: !withResponses,
-          limit: 20
-        })
+        body: JSON.stringify(body)
       })
       const data = await res.json()
       
       if (data.success) {
         setSyncResults(data.results || [])
-        alert(`✅ Sincronizzazione completata!\nRecensioni processate: ${data.reviewsProcessed}\nRisposte inviate: ${data.responsesSent}`)
+        if (withResponses) {
+          alert(`✅ Risposte inviate!\nRecensioni processate: ${data.reviewsProcessed}\nRisposte inviate: ${data.responsesSent}`)
+        }
       } else {
         alert(`❌ Errore: ${data.error}`)
       }
@@ -171,6 +172,7 @@ export default function Home() {
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text)
+    alert('Copiato!')
   }
 
   const renderStars = (rating: number) => {
@@ -181,7 +183,7 @@ export default function Home() {
             key={star}
             className={`w-4 h-4 ${
               star <= rating 
-                ? 'fill-yellow-400 text-yellow-400' 
+                ? rating <= 2 ? 'fill-red-500 text-red-500' : 'fill-yellow-400 text-yellow-400'
                 : 'text-gray-300'
             }`}
           />
@@ -226,7 +228,7 @@ export default function Home() {
               {config?.configured && (
                 <Badge variant="outline" className="bg-white/20 text-white border-white/30">
                   <CheckCircle2 className="w-3 h-3 mr-1" />
-                  API Configurata
+                  Connesso
                 </Badge>
               )}
               
@@ -247,19 +249,261 @@ export default function Home() {
       <main className="max-w-7xl mx-auto px-4 py-6">
         <Tabs value={activeTab} onValueChange={setActiveTab}>
           <TabsList className="grid w-full grid-cols-3 mb-6">
-            <TabsTrigger value="config" className="gap-2">
-              <Settings className="w-4 h-4" />
-              Configurazione
+            <TabsTrigger value="negative" className="gap-2">
+              <AlertTriangle className="w-4 h-4" />
+              Recensioni Negative
             </TabsTrigger>
             <TabsTrigger value="sync" className="gap-2">
               <RefreshCw className="w-4 h-4" />
               Sincronizza
             </TabsTrigger>
-            <TabsTrigger value="templates" className="gap-2">
-              <FileText className="w-4 h-4" />
-              Template
+            <TabsTrigger value="config" className="gap-2">
+              <Settings className="w-4 h-4" />
+              Config
             </TabsTrigger>
           </TabsList>
+
+          {/* Negative Reviews Tab */}
+          <TabsContent value="negative">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <AlertTriangle className="w-5 h-5 text-red-500" />
+                  Recensioni 1-2 Stelle
+                </CardTitle>
+                <CardDescription>
+                  Genera risposte empatiche per le recensioni negative da approvare e inviare
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                {/* Filter */}
+                <div className="flex flex-wrap gap-4 items-center p-4 bg-gray-50 rounded-lg">
+                  <div className="flex items-center gap-2">
+                    <Filter className="w-4 h-4 text-gray-500" />
+                    <span className="text-sm font-medium">Filtro:</span>
+                  </div>
+                  <Select value={selectedStars} onValueChange={setSelectedStars}>
+                    <SelectTrigger className="w-40">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="1">⭐ 1 Stella</SelectItem>
+                      <SelectItem value="2">⭐⭐ 2 Stelle</SelectItem>
+                      <SelectItem value="all">Tutte</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  
+                  <Button 
+                    onClick={() => syncReviews(false)}
+                    disabled={isSyncing || !config?.configured}
+                    variant="outline"
+                  >
+                    {isSyncing ? (
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    ) : (
+                      <RefreshCw className="w-4 h-4 mr-2" />
+                    )}
+                    Genera Risposte
+                  </Button>
+                </div>
+
+                {/* Results */}
+                {syncResults.length > 0 && (
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between">
+                      <h3 className="font-semibold text-lg">
+                        Recensioni trovate: {syncResults.length}
+                      </h3>
+                      <Button 
+                        onClick={() => syncReviews(true)}
+                        disabled={isSyncing}
+                        className="bg-green-600 hover:bg-green-700"
+                      >
+                        <Send className="w-4 h-4 mr-2" />
+                        Invia Tutte le Risposte
+                      </Button>
+                    </div>
+                    
+                    <div className="space-y-4">
+                      {syncResults.map((result, index) => (
+                        <Card key={index} className={`border-l-4 ${result.rating <= 2 ? 'border-l-red-500' : 'border-l-yellow-500'}`}>
+                          <CardContent className="pt-4">
+                            {/* Header */}
+                            <div className="flex justify-between items-start mb-3">
+                              <div>
+                                <div className="flex items-center gap-2 mb-1">
+                                  {renderStars(result.rating)}
+                                  <span className="text-sm font-medium">{result.authorName || 'Cliente'}</span>
+                                </div>
+                                {result.title && (
+                                  <p className="font-semibold text-gray-900">{result.title}</p>
+                                )}
+                              </div>
+                              <Badge variant={result.responded ? 'default' : 'secondary'}>
+                                {result.responded ? '✓ Inviato' : 'In attesa'}
+                              </Badge>
+                            </div>
+                            
+                            {/* Review text */}
+                            {result.text && (
+                              <div className="bg-red-50 p-3 rounded-lg mb-3 border border-red-100">
+                                <p className="text-sm text-gray-700">{result.text}</p>
+                              </div>
+                            )}
+                            
+                            {/* AI Response */}
+                            {result.response && (
+                              <div className="bg-green-50 p-3 rounded-lg mb-3 border border-green-100">
+                                <div className="flex items-center justify-between mb-2">
+                                  <span className="text-xs font-medium text-green-700">🤖 Risposta AI generata:</span>
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    onClick={() => copyToClipboard(result.response || '')}
+                                  >
+                                    <Copy className="w-3 h-3 mr-1" />
+                                    Copia
+                                  </Button>
+                                </div>
+                                <p className="text-sm text-gray-700">{result.response}</p>
+                              </div>
+                            )}
+                            
+                            {/* Actions */}
+                            {!result.responded && result.response && (
+                              <div className="flex gap-2">
+                                <Button
+                                  size="sm"
+                                  className="bg-green-600 hover:bg-green-700"
+                                  onClick={async () => {
+                                    const res = await fetch('/api/trustpilot/sync', {
+                                      method: 'POST',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({
+                                        autoReply: true,
+                                        dryRun: false,
+                                        reviewId: result.reviewId,
+                                        response: result.response
+                                      })
+                                    })
+                                    if (res.ok) {
+                                      alert('Risposta inviata!')
+                                      syncReviews(false)
+                                    }
+                                  }}
+                                >
+                                  <ThumbsUp className="w-4 h-4 mr-1" />
+                                  Approva e Invia
+                                </Button>
+                              </div>
+                            )}
+                            
+                            {/* Error */}
+                            {result.error && (
+                              <p className="text-sm text-red-600">❌ {result.error}</p>
+                            )}
+                          </CardContent>
+                        </Card>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Empty state */}
+                {syncResults.length === 0 && !isSyncing && (
+                  <div className="flex flex-col items-center justify-center py-12 text-gray-400">
+                    <AlertTriangle className="w-16 h-16 mb-4" />
+                    <p className="text-center">Seleziona il filtro e clicca<br />"Genera Risposte" per iniziare</p>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Sync Tab */}
+          <TabsContent value="sync">
+            <Card>
+              <CardHeader>
+                <CardTitle>Sincronizzazione Completa</CardTitle>
+                <CardDescription>
+                  Sincronizza tutte le recensioni e genera risposte automatiche
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                <div className="flex gap-4">
+                  <Button 
+                    onClick={() => syncReviews(false)}
+                    disabled={isSyncing || !config?.configured}
+                    variant="outline"
+                    size="lg"
+                  >
+                    {isSyncing ? (
+                      <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                    ) : (
+                      <RefreshCw className="w-5 h-5 mr-2" />
+                    )}
+                    Solo Anteprima
+                  </Button>
+                  <Button 
+                    onClick={() => syncReviews(true)}
+                    disabled={isSyncing || !config?.configured}
+                    className="bg-green-600 hover:bg-green-700"
+                    size="lg"
+                  >
+                    {isSyncing ? (
+                      <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                    ) : (
+                      <Send className="w-5 h-5 mr-2" />
+                    )}
+                    Sincronizza e Invia
+                  </Button>
+                </div>
+
+                {syncResults.length > 0 && (
+                  <div className="space-y-4">
+                    <h3 className="font-semibold text-lg">Risultati ({syncResults.length} recensioni)</h3>
+                    <div className="space-y-3">
+                      {syncResults.map((result, index) => (
+                        <Card key={index} className={result.responded ? 'border-green-200' : 'border-yellow-200'}>
+                          <CardContent className="pt-4">
+                            <div className="flex justify-between items-start mb-3">
+                              <div>
+                                <div className="flex items-center gap-2 mb-1">
+                                  {renderStars(result.rating)}
+                                  <span className="text-sm font-medium">{result.authorName || 'Cliente'}</span>
+                                </div>
+                              </div>
+                              <Badge variant={result.responded ? 'default' : 'secondary'}>
+                                {result.responded ? 'Inviato' : 'Generato'}
+                              </Badge>
+                            </div>
+                            
+                            {result.response && (
+                              <div className="bg-gray-50 p-3 rounded-lg mb-3 relative group">
+                                <p className="text-sm text-gray-700 pr-8">{result.response}</p>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity"
+                                  onClick={() => copyToClipboard(result.response || '')}
+                                >
+                                  <Copy className="w-4 h-4" />
+                                </Button>
+                              </div>
+                            )}
+                            
+                            {result.error && (
+                              <p className="text-sm text-red-600">❌ {result.error}</p>
+                            )}
+                          </CardContent>
+                        </Card>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
 
           {/* Configuration Tab */}
           <TabsContent value="config">
@@ -268,13 +512,13 @@ export default function Home() {
                 <CardHeader>
                   <CardTitle>Configurazione API Trustpilot</CardTitle>
                   <CardDescription>
-                    Le credenziali sono configurate tramite variabili d'ambiente su Vercel
+                    Le credenziali sono configurate tramite variabili d'ambiente
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
                     <p className="text-sm text-blue-800">
-                      <strong>📌 Variabili d'ambiente configurate:</strong>
+                      <strong>📌 Variabili d'ambiente:</strong>
                     </p>
                     <ul className="text-sm text-blue-700 mt-2 space-y-1">
                       <li>• <code className="bg-blue-100 px-1 rounded">TRUSTPILOT_API_KEY</code></li>
@@ -285,7 +529,7 @@ export default function Home() {
 
                   <div className="border-t pt-4">
                     <p className="text-sm text-gray-600 mb-3">
-                      <strong>Test connessione</strong> (usa credenziali diverse se necessario):
+                      <strong>Test connessione</strong>:
                     </p>
                     
                     <div className="space-y-3">
@@ -371,7 +615,7 @@ export default function Home() {
                           </div>
                           <div className="flex items-center justify-between p-3 bg-green-50 rounded-lg">
                             <span className="text-sm font-medium">Recensioni totali</span>
-                            <span className="text-sm font-bold">{config.businessInfo.numberOfReviews}</span>
+                            <span className="text-sm font-bold">{config.businessInfo.numberOfReviews.toLocaleString()}</span>
                           </div>
                         </>
                       )}
@@ -379,145 +623,45 @@ export default function Home() {
                   ) : (
                     <div className="flex flex-col items-center justify-center py-8 text-gray-400">
                       <AlertCircle className="w-12 h-12 mb-3" />
-                      <p className="text-center">Configura le variabili d'ambiente<br />su Vercel per iniziare</p>
+                      <p className="text-center">Configura le variabili d'ambiente<br />per iniziare</p>
                     </div>
                   )}
                 </CardContent>
               </Card>
-            </div>
-          </TabsContent>
 
-          {/* Sync Tab */}
-          <TabsContent value="sync">
-            <Card>
-              <CardHeader>
-                <CardTitle>Sincronizzazione Recensioni</CardTitle>
-                <CardDescription>
-                  Sincronizza le recensioni da Trustpilot e genera risposte automatiche con AI
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-6">
-                <div className="flex gap-4">
-                  <Button 
-                    onClick={() => syncReviews(false)}
-                    disabled={isSyncing || !config?.configured}
-                    variant="outline"
-                    size="lg"
-                  >
-                    {isSyncing ? (
-                      <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                    ) : (
-                      <RefreshCw className="w-5 h-5 mr-2" />
-                    )}
-                    Genera Risposte (Dry Run)
-                  </Button>
-                  <Button 
-                    onClick={() => syncReviews(true)}
-                    disabled={isSyncing || !config?.configured}
-                    className="bg-green-600 hover:bg-green-700"
-                    size="lg"
-                  >
-                    {isSyncing ? (
-                      <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                    ) : (
-                      <Send className="w-5 h-5 mr-2" />
-                    )}
-                    Sincronizza e Invia
-                  </Button>
-                </div>
-
-                {syncResults.length > 0 && (
-                  <div className="space-y-4">
-                    <h3 className="font-semibold text-lg">Risultati ({syncResults.length} recensioni)</h3>
-                    <div className="space-y-3">
-                      {syncResults.map((result, index) => (
-                        <Card key={index} className={result.responded ? 'border-green-200' : 'border-yellow-200'}>
-                          <CardContent className="pt-4">
-                            <div className="flex justify-between items-start mb-3">
-                              <div>
-                                <div className="flex items-center gap-2 mb-1">
-                                  {renderStars(result.rating)}
-                                  <span className="text-sm font-medium">{result.authorName || 'Cliente'}</span>
-                                </div>
-                              </div>
-                              <Badge variant={result.responded ? 'default' : 'secondary'}>
-                                {result.responded ? 'Inviato' : 'Generato'}
-                              </Badge>
-                            </div>
-                            
-                            {result.response && (
-                              <div className="bg-gray-50 p-3 rounded-lg mb-3 relative group">
-                                <p className="text-sm text-gray-700 pr-8">{result.response}</p>
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity"
-                                  onClick={() => copyToClipboard(result.response || '')}
-                                >
-                                  <Copy className="w-4 h-4" />
-                                </Button>
-                              </div>
-                            )}
-                            
-                            {result.error && (
-                              <p className="text-sm text-red-600">❌ {result.error}</p>
-                            )}
-                          </CardContent>
-                        </Card>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          </TabsContent>
-
-          {/* Templates Tab */}
-          <TabsContent value="templates">
-            <Card>
-              <CardHeader>
-                <CardTitle>Template di Risposta</CardTitle>
-                <CardDescription>
-                  Template predefiniti per la generazione delle risposte
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-4">
-                  {templates.map((template) => (
-                    <div
-                      key={template.id}
-                      className="p-4 bg-gray-50 rounded-lg border"
-                    >
-                      <div className="flex items-center justify-between mb-2">
-                        <div className="flex items-center gap-2">
+              {/* Templates Card */}
+              <Card className="md:col-span-2">
+                <CardHeader>
+                  <CardTitle>Template di Risposta AI</CardTitle>
+                  <CardDescription>
+                    Template utilizzati per generare le risposte automatiche
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid md:grid-cols-2 gap-4">
+                    {templates.map((template) => (
+                      <div
+                        key={template.id}
+                        className="p-4 bg-gray-50 rounded-lg border"
+                      >
+                        <div className="flex items-center justify-between mb-2">
                           <span className="font-medium">{template.name}</span>
-                          {template.isDefault && (
-                            <Badge variant="outline" className="text-xs">Default</Badge>
-                          )}
+                          <Badge variant={template.minRating <= 2 ? 'destructive' : 'default'}>
+                            {template.minRating}-{template.maxRating} ⭐
+                          </Badge>
                         </div>
-                        <div className="text-sm text-gray-500">
-                          {template.minRating}-{template.maxRating} ⭐ | Tono: {template.tone}
-                        </div>
-                      </div>
-                      {template.description && (
-                        <p className="text-sm text-gray-600">{template.description}</p>
-                      )}
-                      {template.customInstruction && (
-                        <p className="text-sm text-gray-500 mt-2 italic">
-                          "{template.customInstruction}"
+                        {template.description && (
+                          <p className="text-sm text-gray-600">{template.description}</p>
+                        )}
+                        <p className="text-xs text-gray-500 mt-2">
+                          Tono: <strong>{template.tone}</strong>
                         </p>
-                      )}
-                    </div>
-                  ))}
-                </div>
-                
-                <div className="mt-6 p-4 bg-yellow-50 rounded-lg border border-yellow-200">
-                  <p className="text-sm text-yellow-800">
-                    <strong>💡 Nota:</strong> Su Vercel i template sono predefiniti. Per personalizzarli, modifica il file <code className="bg-yellow-100 px-1 rounded">src/app/api/templates/route.ts</code>
-                  </p>
-                </div>
-              </CardContent>
-            </Card>
+                      </div>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
           </TabsContent>
         </Tabs>
       </main>
