@@ -33,14 +33,20 @@ export async function GET() {
       console.error('Connection test failed:', error);
     }
 
+    // Extract name and review count from Trustpilot response
+    const businessName = businessInfo?.name?.identifying || 
+                         businessInfo?.name?.referring?.[0] || 
+                         'Farmacia Soccavo';
+    const reviewCount = businessInfo?.numberOfReviews?.total || 0;
+
     return NextResponse.json({
       configured: true,
       apiKey: config.apiKey.substring(0, 8) + '...',  // Masked
       businessUnitId: config.businessUnitId,
       connectionStatus,
       businessInfo: businessInfo ? {
-        name: businessInfo.name,
-        numberOfReviews: businessInfo.numberOfReviews
+        name: businessName,
+        numberOfReviews: reviewCount
       } : null
     });
   } catch (error) {
@@ -76,12 +82,18 @@ export async function POST(request: NextRequest) {
         businessInfo = await getBusinessUnit(testConfig, accessToken);
       }
 
+      // Extract name and review count from Trustpilot response
+      const businessName = businessInfo?.name?.identifying || 
+                           businessInfo?.name?.referring?.[0] || 
+                           'Farmacia Soccavo';
+      const reviewCount = businessInfo?.numberOfReviews?.total || 0;
+
       return NextResponse.json({ 
         success: true,
         message: 'Configurazione valida! Per renderla permanente, aggiorna le variabili d\'ambiente su Vercel.',
         businessInfo: businessInfo ? {
-          name: businessInfo.name,
-          numberOfReviews: businessInfo.numberOfReviews
+          name: businessName,
+          numberOfReviews: reviewCount
         } : null
       });
     } catch (error: any) {
