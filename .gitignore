@@ -12,3 +12,4 @@ coverage/
 .idea/
 *.db
 *.db-journal
+.vercel

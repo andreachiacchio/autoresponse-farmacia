@@ -64,22 +64,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Test the credentials before saving
-    try {
-      const accessToken = await getAccessToken({ apiKey, apiSecret, businessUnitId });
-      
-      // If businessUnitId provided, verify it
-      if (businessUnitId) {
-        await getBusinessUnit({ apiKey, apiSecret, businessUnitId }, accessToken);
-      }
-    } catch (error) {
-      return NextResponse.json(
-        { error: 'Credenziali non valide o Business Unit ID errato' },
-        { status: 400 }
-      );
-    }
-
-    // Save the configuration
+    // Save the configuration directly (test later)
     await saveTrustpilotConfig({ apiKey, apiSecret, businessUnitId });
 
     return NextResponse.json({ 
@@ -99,12 +84,19 @@ export async function POST(request: NextRequest) {
 export async function PUT(request: NextRequest) {
   try {
     const body = await request.json();
-    const { id, isActive } = body;
+    const { id, isActive, businessUnitId } = body;
 
-    await db.trustpilotConfig.update({
-      where: { id },
-      data: { isActive }
-    });
+    if (businessUnitId !== undefined) {
+      await db.trustpilotConfig.update({
+        where: { id },
+        data: { businessUnitId }
+      });
+    } else {
+      await db.trustpilotConfig.update({
+        where: { id },
+        data: { isActive }
+      });
+    }
 
     return NextResponse.json({ success: true });
   } catch (error) {
